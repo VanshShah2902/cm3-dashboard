@@ -76,37 +76,14 @@ def get_cm3(date_str=None):
     now = _ist_now()
     if date_str is None:
         date_str = now.strftime('%Y-%m-%d')
-
-    with _cache_lock:
-        cached = _cache.get(date_str)
-        if cached and (time.time() - cached['ts']) < 300:
-            return cached['data']
-
-    data = _run_cm3(date_str)
-
-    with _cache_lock:
-        _cache[date_str] = {'data': data, 'ts': time.time()}
-
-    return data
+    return _run_cm3(date_str)
 
 
 def get_delta(date_str=None):
     now = _ist_now()
     if date_str is None:
         date_str = now.strftime('%Y-%m-%d')
-
-    cache_key = f"delta_{date_str}"
-    with _cache_lock:
-        cached = _cache.get(cache_key)
-        if cached and (time.time() - cached['ts']) < 300:
-            return cached['data']
-
-    data = _run_delta(date_str)
-
-    with _cache_lock:
-        _cache[cache_key] = {'data': data, 'ts': time.time()}
-
-    return data
+    return _run_delta(date_str)
 
 
 DASHBOARD_HTML = r'''<!DOCTYPE html>
