@@ -58,6 +58,63 @@ def fetch_meta_spend(date_str):
     return rows
 
 
+def fetch_meta_spend_hourly(date_str):
+    """Fetch adset-level spend broken down by hour for a given date.
+    Returns list of dicts with extra 'hour' field (0-23).
+    """
+    rows = []
+    for acc in ACCOUNTS:
+        aid, token = acc['id'], acc['token']
+        if not aid or not token:
+            continue
+
+        url = (
+            f"{META_API_BASE}/act_{aid}/insights"
+            f"?access_token={token}"
+            f"&level=adset"
+            f"&fields=adset_name,adset_id,campaign_name,campaign_id,spend"
+            f"&time_range={{\"since\":\"{date_str}\",\"until\":\"{date_str}\"}}"
+            f"&time_increment=1"
+            f"&breakdowns=hourly_stats_aggregated_by_advertiser_time_zone"
+            f"&limit=500"
+        )
+
+        while url:
+            try:
+                resp = requests.get(url, timeout=60)
+                data = resp.json()
+            except Exception as e:
+                print(f"  Meta hourly {acc['name']}: {e}")
+                break
+
+            if 'error' in data:
+                print(f"  Meta hourly {acc['name']} error: {data['error'].get('message', '')}")
+                break
+
+            for r in data.get('data', []):
+                spend = float(r.get('spend', 0))
+                if spend > 0:
+                    hour_range = r.get('hourly_stats_aggregated_by_advertiser_time_zone', '00:00:00 - 00:59:59')
+                    hour = int(hour_range.split(':')[0])
+                    rows.append({
+                        'account': acc['name'],
+                        'campaign_name': r.get('campaign_name', ''),
+                        'campaign_id': r.get('campaign_id', ''),
+                        'adset_name': r.get('adset_name', ''),
+                        'adset_id': r.get('adset_id', ''),
+                        'spend': spend,
+                        'hour': hour,
+                    })
+
+            url = data.get('paging', {}).get('next')
+            if url:
+                time.sleep(0.5)
+
+        print(f"  Meta hourly: {acc['name']} done")
+
+    return rows
+
+
 def fetch_shopify_orders(date_str, end_date_str=None):
     """Fetch Shopify orders for a date (or date range).
     Returns list of flattened order-lineitem dicts.

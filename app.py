@@ -13,8 +13,8 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from config import API_SECRET
-from data_fetch import fetch_meta_spend, fetch_shopify_orders
-from cm3_engine import build_campaign_dict, process_orders, build_tables
+from data_fetch import fetch_meta_spend, fetch_meta_spend_hourly, fetch_shopify_orders
+from cm3_engine import build_campaign_dict, process_orders, build_tables, build_delta_tables
 
 app = Flask(__name__)
 
@@ -52,6 +52,26 @@ def _run_cm3(date_str=None):
     return tables
 
 
+def _run_delta(date_str=None):
+    now = _ist_now()
+    if date_str is None:
+        date_str = now.strftime('%Y-%m-%d')
+
+    print(f"[Delta] Fetching hourly data for {date_str}...")
+    hourly_spend = fetch_meta_spend_hourly(date_str)
+    print(f"[Delta] Hourly spend rows: {len(hourly_spend)}")
+
+    spend = fetch_meta_spend(date_str)
+    campaigns = build_campaign_dict(spend)
+
+    today_orders = fetch_shopify_orders(date_str)
+    today_df = process_orders(today_orders, campaigns, date_str)
+    print(f"[Delta] Today matched: {len(today_df)}")
+
+    slots = build_delta_tables(today_df, hourly_spend, campaigns, date_str)
+    return {'date': date_str, 'slots': slots}
+
+
 def get_cm3(date_str=None):
     now = _ist_now()
     if date_str is None:
@@ -66,6 +86,25 @@ def get_cm3(date_str=None):
 
     with _cache_lock:
         _cache[date_str] = {'data': data, 'ts': time.time()}
+
+    return data
+
+
+def get_delta(date_str=None):
+    now = _ist_now()
+    if date_str is None:
+        date_str = now.strftime('%Y-%m-%d')
+
+    cache_key = f"delta_{date_str}"
+    with _cache_lock:
+        cached = _cache.get(cache_key)
+        if cached and (time.time() - cached['ts']) < 300:
+            return cached['data']
+
+    data = _run_delta(date_str)
+
+    with _cache_lock:
+        _cache[cache_key] = {'data': data, 'ts': time.time()}
 
     return data
 
@@ -148,6 +187,16 @@ tfoot td.num { text-align: right; }
 .down { color: var(--red); }
 .even { color: var(--fg2); }
 
+/* Tabs */
+.tabs { display: flex; gap: 4px; margin-bottom: 20px; background: var(--bg2); padding: 4px; border-radius: 10px; border: 1px solid var(--border); }
+.tab { flex: 1; padding: 10px 16px; border: none; background: transparent; color: var(--fg2); font-size: 0.85rem; font-weight: 600; border-radius: 8px; cursor: pointer; transition: all 0.2s; }
+.tab.active { background: var(--accent); color: #fff; }
+.tab:not(.active):hover { background: var(--bg3); color: var(--fg); }
+
+/* Slot header */
+.slot-header { background: var(--accent); color: #fff; padding: 12px 18px; border-radius: 10px; margin: 24px 0 12px 0; font-size: 1rem; font-weight: 700; display: flex; justify-content: space-between; align-items: center; }
+.slot-header .slot-stats { font-size: 0.82rem; font-weight: 400; opacity: 0.9; }
+
 /* Loading */
 .loading { display: flex; align-items: center; justify-content: center; padding: 60px 20px; flex-direction: column; gap: 16px; }
 .spinner { width: 36px; height: 36px; border: 3px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin 0.8s linear infinite; }
@@ -171,10 +220,14 @@ tfoot td.num { text-align: right; }
     <h1>CM3 <span>Intraday</span></h1>
     <div class="header-right">
       <input type="date" id="datePick" class="date-pick">
-      <button class="btn btn-primary" onclick="loadData()">Refresh</button>
+      <button class="btn btn-primary" onclick="loadCurrent()">Refresh</button>
       <button class="btn btn-secondary" onclick="downloadExcel()">Download Excel</button>
       <button class="btn btn-secondary" id="themeBtn" onclick="toggleTheme()" title="Toggle theme">☀️</button>
     </div>
+  </div>
+  <div class="tabs">
+    <button class="tab active" id="tabCm3" onclick="switchTab('cm3')">CM3 Report</button>
+    <button class="tab" id="tabDelta" onclick="switchTab('delta')">Delta (Hourly)</button>
   </div>
   <div id="content">
     <div class="loading">
@@ -187,14 +240,27 @@ tfoot td.num { text-align: right; }
 
 <script>
 const F = n => n != null ? n.toLocaleString('en-IN') : '—';
+let currentTab = 'cm3';
 
 function datePick() {
   return document.getElementById('datePick').value || '';
 }
 
-async function loadData() {
+function switchTab(tab) {
+  currentTab = tab;
+  document.getElementById('tabCm3').classList.toggle('active', tab === 'cm3');
+  document.getElementById('tabDelta').classList.toggle('active', tab === 'delta');
+  loadCurrent();
+}
+
+async function loadCurrent() {
+  if (currentTab === 'cm3') await loadCm3();
+  else await loadDelta();
+}
+
+async function loadCm3() {
   const el = document.getElementById('content');
-  el.innerHTML = '<div class="loading"><div class="spinner"></div><div class="loading-text">Fetching Meta spend & Shopify orders...</div></div>';
+  el.innerHTML = '<div class="loading"><div class="spinner"></div><div class="loading-text">Fetching CM3 report...</div></div>';
   try {
     const d = datePick();
     const url = d ? `/api/cm3?date=${d}` : '/api/cm3';
@@ -202,6 +268,21 @@ async function loadData() {
     const j = await r.json();
     if (j.error) throw new Error(j.error);
     render(j);
+  } catch(e) {
+    el.innerHTML = `<div class="loading"><div class="loading-text" style="color:var(--red)">Error: ${e.message}</div></div>`;
+  }
+}
+
+async function loadDelta() {
+  const el = document.getElementById('content');
+  el.innerHTML = '<div class="loading"><div class="spinner"></div><div class="loading-text">Fetching hourly delta data...</div></div>';
+  try {
+    const d = datePick();
+    const url = d ? `/api/delta?date=${d}` : '/api/delta';
+    const r = await fetch(url);
+    const j = await r.json();
+    if (j.error) throw new Error(j.error);
+    renderDelta(j);
   } catch(e) {
     el.innerHTML = `<div class="loading"><div class="loading-text" style="color:var(--red)">Error: ${e.message}</div></div>`;
   }
@@ -310,6 +391,62 @@ function hourlyTable(t, today, yest) {
   return h;
 }
 
+function renderDelta(d) {
+  const el = document.getElementById('content');
+  if (!d.slots || d.slots.length === 0) {
+    el.innerHTML = '<div class="loading"><div class="loading-text">No delta data available yet for this date.</div></div>';
+    return;
+  }
+  let html = '';
+  for (const slot of d.slots) {
+    const t1 = slot.table1, t4 = slot.table4;
+    const totalUnits = t1.totals.u + (slot.table2.totals.u || 0);
+    const totalSpend = Math.round(t1.totals.s + (slot.table2.totals.s || 0));
+    const totalOrders = t1.totals.o + (slot.table2.totals.o || 0);
+    html += `<div class="slot-header"><span>${slot.slot}</span><span class="slot-stats">${totalOrders} orders &middot; ${totalUnits} units &middot; ₹${F(totalSpend)} spend</span></div>`;
+    html += matrixTable(slot.table1, 'Arjuna Tea (Core) — ' + slot.slot);
+    html += matrixTable(slot.table2, 'Black Leaf Tea — ' + slot.slot);
+    html += deltaStateTable(slot.table3, slot.slot);
+    html += deltaAccTable(slot.table4, slot.slot);
+    html += deltaGrowthTable(slot.table5, slot.slot);
+  }
+  el.innerHTML = html;
+}
+
+function deltaStateTable(t, slot) {
+  if (!t.rows.length) return '';
+  let h = '<div class="section"><div class="section-title">State Summary (Core) — ' + slot + ' <span class="badge">' + t.totals.units + ' units</span></div>';
+  h += '<div class="tbl-wrap"><table><thead><tr><th>#</th><th>State</th><th class="num">Orders</th><th class="num">Units</th><th class="num">CPT</th><th class="num">Gross</th><th class="num">Spend</th></tr></thead><tbody>';
+  for (const r of t.rows) {
+    h += `<tr><td>${r.rank}</td><td>${r.state}</td><td class="num">${r.orders}</td><td class="num">${r.units}</td><td class="num"><b>₹${F(r.cpt)}</b></td><td class="num">₹${F(r.gross)}</td><td class="num">₹${F(r.raw_spend)}</td></tr>`;
+  }
+  h += `</tbody><tfoot><tr><td></td><td><b>Total</b></td><td class="num">${t.totals.orders}</td><td class="num">${t.totals.units}</td><td class="num"><b>₹${F(t.totals.cpt)}</b></td><td class="num">₹${F(Math.round(t.totals.gross))}</td><td class="num">₹${F(Math.round(t.totals.raw_spend))}</td></tr></tfoot></table></div></div>`;
+  return h;
+}
+
+function deltaAccTable(t, slot) {
+  if (!t.rows.length) return '';
+  let h = '<div class="section"><div class="section-title">Account Summary (Core) — ' + slot + ' <span class="badge">' + t.totals.units + ' units</span></div>';
+  h += '<div class="tbl-wrap"><table><thead><tr><th>Account</th><th class="num">Orders</th><th class="num">Units</th><th class="num">CPT</th><th class="num">Gross</th><th class="num">Spend</th></tr></thead><tbody>';
+  for (const r of t.rows) {
+    h += `<tr><td>${r.account}</td><td class="num">${r.orders}</td><td class="num">${r.units}</td><td class="num"><b>₹${F(r.cpt)}</b></td><td class="num">₹${F(r.gross)}</td><td class="num">₹${F(r.raw_spend)}</td></tr>`;
+  }
+  h += `</tbody><tfoot><tr><td><b>Total</b></td><td class="num">${t.totals.orders}</td><td class="num">${t.totals.units}</td><td class="num"><b>₹${F(t.totals.cpt)}</b></td><td class="num">₹${F(Math.round(t.totals.gross))}</td><td class="num">₹${F(Math.round(t.totals.raw_spend))}</td></tr></tfoot></table></div></div>`;
+  return h;
+}
+
+function deltaGrowthTable(t, slot) {
+  if (!t.rows.length) return '';
+  let h = '<div class="section"><div class="section-title">Account Units — ' + slot + '</div>';
+  h += '<div class="tbl-wrap"><table><thead><tr><th>Account</th><th class="num">Units</th></tr></thead><tbody>';
+  for (const r of t.rows) {
+    const bold = r.account === 'Overall' ? 'font-weight:700' : '';
+    h += `<tr style="${bold}"><td>${r.account}</td><td class="num">${r.units}</td></tr>`;
+  }
+  h += '</tbody></table></div></div>';
+  return h;
+}
+
 // Theme
 function toggleTheme() {
   const root = document.documentElement;
@@ -327,9 +464,20 @@ try {
   }
 } catch(e) {}
 
+// Auto-refresh every hour on the hour
+function scheduleAutoRefresh() {
+  const now = new Date();
+  const msToNextHour = (60 - now.getMinutes()) * 60000 - now.getSeconds() * 1000;
+  setTimeout(() => {
+    loadCurrent();
+    setInterval(loadCurrent, 3600000);
+  }, msToNextHour);
+}
+
 // Init
 document.getElementById('datePick').valueAsDate = new Date();
-loadData();
+loadCurrent();
+scheduleAutoRefresh();
 </script>
 </body>
 </html>'''
@@ -351,6 +499,23 @@ def api_cm3():
 
     try:
         data = get_cm3(date_str)
+        return jsonify(data)
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/delta')
+def api_delta():
+    date_str = request.args.get('date')
+    if date_str:
+        try:
+            datetime.strptime(date_str, '%Y-%m-%d')
+        except ValueError:
+            return jsonify({'error': 'Invalid date format, use YYYY-MM-DD'}), 400
+    try:
+        data = get_delta(date_str)
         return jsonify(data)
     except Exception as e:
         import traceback

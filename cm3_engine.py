@@ -289,6 +289,151 @@ def process_orders(orders_data, campaign_list, date_str):
     return final
 
 
+def build_campaign_dict_hourly(hourly_spend_rows):
+    """Build campaign dict per hour from hourly spend data.
+    Returns dict: hour -> list of campaign tuples.
+    """
+    by_hour = defaultdict(list)
+    for r in hourly_spend_rows:
+        by_hour[r['hour']].append(r)
+    return {h: build_campaign_dict(rows) for h, rows in by_hour.items()}
+
+
+def build_delta_tables(today_df, hourly_spend_rows, campaign_list, today_str):
+    """Build delta tables for each hourly slot.
+    Returns list of slot dicts, each containing 5 tables.
+    """
+    if len(today_df) == 0:
+        return []
+
+    last_hour = today_df.hour.max()
+    camp_df = pd.DataFrame(campaign_list, columns=['cid', 'acc', 'state', 'kind', 'spend', 'deliv', 'name'])
+
+    SEQ_STATES = ['MH', 'NCR', 'UP', 'WB', 'KA', 'TN', 'KL', 'BR', 'JH', 'APTS', 'RJ']
+    ACC_ORDER = ['Acc 1', 'Acc 2', 'Acc 3', 'Acc 4', 'Flank MA 4', 'Flank RS NPD']
+    ACCS_SHORT = {'MA1': 'Acc 1', 'MA2': 'Acc 2', 'MA3': 'Acc 3', 'MA4': 'Acc 4', 'FA1': 'Flank MA 4', 'FA2': 'Flank RS NPD'}
+
+    hourly_spend = defaultdict(lambda: defaultdict(float))
+    for r in hourly_spend_rows:
+        cm3_acc = NAME_TO_CM3.get(r['account'], r['account'])
+        state = classify_campaign_state(r['campaign_name'])
+        is_milk = bool(re.search(r'milk tea|black', r['adset_name'].lower()))
+        kind = 'milk' if is_milk else 'core'
+        hourly_spend[r['hour']][(cm3_acc, state, kind)] += r['spend']
+
+    slots = []
+    for h in range(0, last_hour + 1):
+        h_orders = today_df[today_df.hour == h]
+        h_spend = hourly_spend.get(h, {})
+        if len(h_orders) == 0 and not h_spend:
+            continue
+
+        a = h % 12 or 12
+        b = (h + 1) % 12 or 12
+        ap = 'AM' if h < 12 else 'PM'
+        bp = 'AM' if (h + 1) % 24 < 12 else 'PM'
+        slot_label = f"{a}–{b} {ap}" if ap == bp else f"{a} {ap}–{b} {bp}"
+
+        def _matrix(kind):
+            od = h_orders[h_orders.kind == kind] if len(h_orders) > 0 else pd.DataFrame()
+            rows = []
+            tot = {'o': 0, 'u': 0, 'g': 0.0, 's': 0.0}
+            for acc in ACC_ORDER:
+                states = list(SEQ_STATES)
+                if len(od) > 0:
+                    have = set(od[od.acc == acc].state.dropna())
+                else:
+                    have = set()
+                have |= {s for (a_, s, k), v in h_spend.items() if a_ == acc and k == kind and v > 0}
+                states += [s for s in sorted(have) if s not in states]
+
+                for st in states:
+                    o = od[(od.acc == acc) & (od.state == st)] if len(od) > 0 else pd.DataFrame()
+                    spend = float(h_spend.get((acc, st, kind), 0.0))
+                    if len(o) == 0 and spend <= 0:
+                        continue
+                    n_orders = len(o)
+                    units = int(o.units.sum()) if len(o) > 0 else 0
+                    gross = float(o.Total.sum()) if len(o) > 0 else 0
+                    gst_spend = spend * 1.18
+                    cpt = round(gst_spend / units) if units > 0 else 0
+
+                    rows.append({
+                        'segment': STATE_LABELS.get(st, st),
+                        'orders': n_orders, 'units': units, 'cpt': cpt,
+                        'gross': round(gross), 'raw_spend': round(spend),
+                        'account': CM3_TO_SHORT.get(acc, acc),
+                    })
+                    tot['o'] += n_orders
+                    tot['u'] += units
+                    tot['g'] += gross
+                    tot['s'] += spend
+            tot['cpt'] = round(tot['s'] * 1.18 / tot['u']) if tot['u'] > 0 else 0
+            return rows, tot
+
+        core_rows, core_tot = _matrix('core')
+        milk_rows, milk_tot = _matrix('milk')
+
+        # State summary from core
+        state_data = defaultdict(lambda: [0, 0, 0.0, 0.0])
+        for r in core_rows:
+            abbr = STATE_ABBR.get(r['segment'], r['segment'])
+            d = state_data[abbr]
+            d[0] += r['orders']; d[1] += r['units']; d[2] += r['gross']; d[3] += r['raw_spend']
+        state_rows = []
+        ranked = sorted(
+            [(st, state_data[st]) for st in STATE_ORDER if st in state_data and (state_data[st][0] > 0 or state_data[st][3] > 0)],
+            key=lambda x: -x[1][1]
+        )
+        for rank, (st, d) in enumerate(ranked, 1):
+            cpt = round(d[3] * 1.18 / d[1]) if d[1] > 0 else 0
+            state_rows.append({'rank': rank, 'state': st, 'orders': d[0], 'units': d[1], 'cpt': cpt, 'gross': round(d[2]), 'raw_spend': round(d[3])})
+        state_tot = {
+            'orders': sum(r['orders'] for r in state_rows), 'units': sum(r['units'] for r in state_rows),
+            'gross': sum(r['gross'] for r in state_rows), 'raw_spend': sum(r['raw_spend'] for r in state_rows),
+        }
+        state_tot['cpt'] = round(state_tot['raw_spend'] * 1.18 / state_tot['units']) if state_tot['units'] > 0 else 0
+
+        # Account summary from core
+        acc_data = defaultdict(lambda: [0, 0, 0.0, 0.0])
+        for r in core_rows:
+            d = acc_data[r['account']]
+            d[0] += r['orders']; d[1] += r['units']; d[2] += r['gross']; d[3] += r['raw_spend']
+        acc_rows = []
+        for an in ['MA1', 'MA2', 'MA3', 'MA4', 'FA1', 'FA2']:
+            if an in acc_data:
+                d = acc_data[an]
+                cpt = round(d[3] * 1.18 / d[1]) if d[1] > 0 else 0
+                acc_rows.append({'account': an, 'orders': d[0], 'units': d[1], 'cpt': cpt, 'gross': round(d[2]), 'raw_spend': round(d[3])})
+        acc_tot = {
+            'orders': sum(r['orders'] for r in acc_rows), 'units': sum(r['units'] for r in acc_rows),
+            'gross': sum(r['gross'] for r in acc_rows), 'raw_spend': sum(r['raw_spend'] for r in acc_rows),
+        }
+        acc_tot['cpt'] = round(acc_tot['raw_spend'] * 1.18 / acc_tot['units']) if acc_tot['units'] > 0 else 0
+
+        # Account growth (this hour's units per account)
+        tc = h_orders[h_orders.kind == 'core'] if len(h_orders) > 0 else pd.DataFrame(columns=['units', 'acc'])
+        growth_rows = []
+        for name, acode in list(ACCS_SHORT.items()) + [('Overall', None)]:
+            if len(tc) > 0:
+                u = int(tc[tc.acc == acode].units.sum()) if acode else int(tc.units.sum())
+            else:
+                u = 0
+            growth_rows.append({'account': name, 'units': u})
+
+        slots.append({
+            'slot': slot_label,
+            'hour': h,
+            'table1': {'rows': core_rows, 'totals': core_tot, 'title': f'Arjuna Tea (Core)'},
+            'table2': {'rows': milk_rows, 'totals': milk_tot, 'title': f'Black Leaf Tea'},
+            'table3': {'rows': state_rows, 'totals': state_tot},
+            'table4': {'rows': acc_rows, 'totals': acc_tot},
+            'table5': {'rows': growth_rows},
+        })
+
+    return slots
+
+
 def build_tables(today_df, yest_df, spend_rows, campaign_list, today_str, yest_str):
     """Build all 6 CM3 report tables. Returns dict with table data."""
     camp_df = pd.DataFrame(campaign_list, columns=['cid', 'acc', 'state', 'kind', 'spend', 'deliv', 'name'])
