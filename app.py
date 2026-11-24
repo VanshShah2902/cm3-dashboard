@@ -31,20 +31,13 @@ def _run_cm3(date_str=None):
         date_str = now.strftime('%Y-%m-%d')
     yest_str = (datetime.strptime(date_str, '%Y-%m-%d') - timedelta(days=1)).strftime('%Y-%m-%d')
 
-    print(f"[CM3] Fetching data for {date_str}...")
-    spend = fetch_meta_spend(date_str)
-    print(f"[CM3] Spend rows: {len(spend)}")
+    shared = _get_shared_data(date_str)
+    spend = shared['spend']
+    campaigns = shared['campaigns']
+    today_df = shared['today_df']
 
-    campaigns = build_campaign_dict(spend)
-    print(f"[CM3] Campaigns: {len(campaigns)}")
-
-    today_orders = fetch_shopify_orders(date_str)
-    print(f"[CM3] Today orders: {len(today_orders)}")
-    today_df = process_orders(today_orders, campaigns, date_str)
-    print(f"[CM3] Today matched: {len(today_df)}")
-
+    print(f"[CM3] Fetching yesterday orders for {yest_str}...")
     yest_orders = fetch_shopify_orders(yest_str)
-    print(f"[CM3] Yesterday orders: {len(yest_orders)}")
     yest_df = process_orders(yest_orders, campaigns, yest_str)
     print(f"[CM3] Yesterday matched: {len(yest_df)}")
 
@@ -52,23 +45,41 @@ def _run_cm3(date_str=None):
     return tables
 
 
-def _run_delta(date_str=None):
+_shared = {}
+_shared_lock = threading.Lock()
+
+def _get_shared_data(date_str):
+    """Fetch spend + orders once, share between CM3 and Delta."""
+    with _shared_lock:
+        cached = _shared.get(date_str)
+        if cached and (time.time() - cached['ts']) < 90:
+            return cached['data']
+
+    print(f"[Shared] Fetching spend + orders for {date_str}...")
+    spend = fetch_meta_spend(date_str)
+    campaigns = build_campaign_dict(spend)
+    today_orders = fetch_shopify_orders(date_str)
+    today_df = process_orders(today_orders, campaigns, date_str)
+    data = {'spend': spend, 'campaigns': campaigns, 'today_orders': today_orders, 'today_df': today_df}
+
+    with _shared_lock:
+        _shared[date_str] = {'data': data, 'ts': time.time()}
+    return data
+
+
+def _run_delta(date_str=None, shared=None):
     now = _ist_now()
     if date_str is None:
         date_str = now.strftime('%Y-%m-%d')
 
-    print(f"[Delta] Fetching hourly data for {date_str}...")
+    print(f"[Delta] Fetching hourly spend for {date_str}...")
     hourly_spend = fetch_meta_spend_hourly(date_str)
     print(f"[Delta] Hourly spend rows: {len(hourly_spend)}")
 
-    spend = fetch_meta_spend(date_str)
-    campaigns = build_campaign_dict(spend)
+    if shared is None:
+        shared = _get_shared_data(date_str)
 
-    today_orders = fetch_shopify_orders(date_str)
-    today_df = process_orders(today_orders, campaigns, date_str)
-    print(f"[Delta] Today matched: {len(today_df)}")
-
-    slots = build_delta_tables(today_df, hourly_spend, campaigns, date_str)
+    slots = build_delta_tables(shared['today_df'], hourly_spend, shared['campaigns'], date_str)
     return {'date': date_str, 'slots': slots}
 
 
@@ -76,6 +87,10 @@ def get_cm3(date_str=None, fresh=False):
     now = _ist_now()
     if date_str is None:
         date_str = now.strftime('%Y-%m-%d')
+
+    if fresh:
+        with _shared_lock:
+            _shared.pop(date_str, None)
 
     if not fresh:
         with _cache_lock:
@@ -94,11 +109,15 @@ def get_delta(date_str=None, fresh=False):
     if date_str is None:
         date_str = now.strftime('%Y-%m-%d')
 
+    if fresh:
+        with _shared_lock:
+            _shared.pop(date_str, None)
+
     cache_key = f"delta_{date_str}"
     if not fresh:
         with _cache_lock:
             cached = _cache.get(cache_key)
-            if cached and (time.time() - cached['ts']) < 90:
+            if cached and (time.time() - cached['ts']) < 300:
                 return cached['data']
 
     data = _run_delta(date_str)
