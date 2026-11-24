@@ -72,18 +72,39 @@ def _run_delta(date_str=None):
     return {'date': date_str, 'slots': slots}
 
 
-def get_cm3(date_str=None):
+def get_cm3(date_str=None, fresh=False):
     now = _ist_now()
     if date_str is None:
         date_str = now.strftime('%Y-%m-%d')
-    return _run_cm3(date_str)
+
+    if not fresh:
+        with _cache_lock:
+            cached = _cache.get(date_str)
+            if cached and (time.time() - cached['ts']) < 90:
+                return cached['data']
+
+    data = _run_cm3(date_str)
+    with _cache_lock:
+        _cache[date_str] = {'data': data, 'ts': time.time()}
+    return data
 
 
-def get_delta(date_str=None):
+def get_delta(date_str=None, fresh=False):
     now = _ist_now()
     if date_str is None:
         date_str = now.strftime('%Y-%m-%d')
-    return _run_delta(date_str)
+
+    cache_key = f"delta_{date_str}"
+    if not fresh:
+        with _cache_lock:
+            cached = _cache.get(cache_key)
+            if cached and (time.time() - cached['ts']) < 90:
+                return cached['data']
+
+    data = _run_delta(date_str)
+    with _cache_lock:
+        _cache[cache_key] = {'data': data, 'ts': time.time()}
+    return data
 
 
 DASHBOARD_HTML = r'''<!DOCTYPE html>
@@ -210,7 +231,7 @@ tfoot td.num { text-align: right; }
     <h1>CM3 <span>Intraday</span></h1>
     <div class="header-right">
       <input type="date" id="datePick" class="date-pick">
-      <button class="btn btn-primary" onclick="loadCurrent()">Refresh</button>
+      <button class="btn btn-primary" onclick="manualRefresh()">Refresh</button>
       <button class="btn btn-secondary" onclick="downloadExcel()">Download Excel</button>
       <button class="btn btn-secondary" id="themeBtn" onclick="toggleTheme()" title="Toggle theme">☀️</button>
     </div>
@@ -243,9 +264,17 @@ function switchTab(tab) {
   loadCurrent();
 }
 
+let isFresh = false;
+
 async function loadCurrent() {
   if (currentTab === 'cm3') await loadCm3();
   else await loadDelta();
+  isFresh = false;
+}
+
+function manualRefresh() {
+  isFresh = true;
+  loadCurrent();
 }
 
 async function loadCm3() {
@@ -253,7 +282,8 @@ async function loadCm3() {
   el.innerHTML = '<div class="loading"><div class="spinner"></div><div class="loading-text">Fetching CM3 report...</div></div>';
   try {
     const d = datePick();
-    const url = d ? `/api/cm3?date=${d}` : '/api/cm3';
+    let url = d ? `/api/cm3?date=${d}` : '/api/cm3';
+    if (isFresh) url += (url.includes('?') ? '&' : '?') + 'fresh=1';
     const r = await fetch(url);
     const j = await r.json();
     if (j.error) throw new Error(j.error);
@@ -268,7 +298,8 @@ async function loadDelta() {
   el.innerHTML = '<div class="loading"><div class="spinner"></div><div class="loading-text">Fetching hourly delta data...</div></div>';
   try {
     const d = datePick();
-    const url = d ? `/api/delta?date=${d}` : '/api/delta';
+    let url = d ? `/api/delta?date=${d}` : '/api/delta';
+    if (isFresh) url += (url.includes('?') ? '&' : '?') + 'fresh=1';
     const r = await fetch(url);
     const j = await r.json();
     if (j.error) throw new Error(j.error);
@@ -527,8 +558,9 @@ def api_cm3():
         except ValueError:
             return jsonify({'error': 'Invalid date format, use YYYY-MM-DD'}), 400
 
+    fresh = request.args.get('fresh') == '1'
     try:
-        data = get_cm3(date_str)
+        data = get_cm3(date_str, fresh=fresh)
         return jsonify(data)
     except Exception as e:
         import traceback
@@ -544,8 +576,9 @@ def api_delta():
             datetime.strptime(date_str, '%Y-%m-%d')
         except ValueError:
             return jsonify({'error': 'Invalid date format, use YYYY-MM-DD'}), 400
+    fresh = request.args.get('fresh') == '1'
     try:
-        data = get_delta(date_str)
+        data = get_delta(date_str, fresh=fresh)
         return jsonify(data)
     except Exception as e:
         import traceback
