@@ -197,6 +197,11 @@ tfoot td.num { text-align: right; }
 .slot-header { background: var(--accent); color: #fff; padding: 12px 18px; border-radius: 10px; margin: 24px 0 12px 0; font-size: 1rem; font-weight: 700; display: flex; justify-content: space-between; align-items: center; }
 .slot-header .slot-stats { font-size: 0.82rem; font-weight: 400; opacity: 0.9; }
 
+/* Slot picker */
+.slot-picker { background: var(--bg2); padding: 14px 18px; border-radius: 10px; border: 1px solid var(--border); margin-bottom: 16px; display: flex; align-items: center; gap: 12px; }
+.slot-picker label { font-weight: 600; font-size: 0.85rem; white-space: nowrap; }
+.slot-picker select { flex: 1; background: var(--bg3); border: 1px solid var(--border); color: var(--fg); padding: 8px 12px; border-radius: 8px; font-size: 0.85rem; cursor: pointer; }
+
 /* Loading */
 .loading { display: flex; align-items: center; justify-content: center; padding: 60px 20px; flex-direction: column; gap: 16px; }
 .spinner { width: 36px; height: 36px; border: 3px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin 0.8s linear infinite; }
@@ -391,25 +396,48 @@ function hourlyTable(t, today, yest) {
   return h;
 }
 
+let deltaData = null;
+
 function renderDelta(d) {
   const el = document.getElementById('content');
   if (!d.slots || d.slots.length === 0) {
     el.innerHTML = '<div class="loading"><div class="loading-text">No delta data available yet for this date.</div></div>';
     return;
   }
-  let html = '';
-  for (const slot of d.slots) {
-    const t1 = slot.table1, t4 = slot.table4;
-    const totalUnits = t1.totals.u + (slot.table2.totals.u || 0);
-    const totalSpend = Math.round(t1.totals.s + (slot.table2.totals.s || 0));
-    const totalOrders = t1.totals.o + (slot.table2.totals.o || 0);
-    html += `<div class="slot-header"><span>${slot.slot}</span><span class="slot-stats">${totalOrders} orders &middot; ${totalUnits} units &middot; ₹${F(totalSpend)} spend</span></div>`;
-    html += matrixTable(slot.table1, 'Arjuna Tea (Core) — ' + slot.slot);
-    html += matrixTable(slot.table2, 'Black Leaf Tea — ' + slot.slot);
-    html += deltaStateTable(slot.table3, slot.slot);
-    html += deltaAccTable(slot.table4, slot.slot);
-    html += deltaGrowthTable(slot.table5, slot.slot);
+  deltaData = d;
+
+  // Build slot picker
+  let html = '<div class="slot-picker"><label>Select Slot:</label><select id="slotSelect" onchange="showSlot()">';
+  for (let i = d.slots.length - 1; i >= 0; i--) {
+    const s = d.slots[i];
+    const t1 = s.table1, t2 = s.table2;
+    const tu = t1.totals.u + (t2.totals.u || 0);
+    const to = t1.totals.o + (t2.totals.o || 0);
+    html += `<option value="${i}">${s.slot} (${to} orders, ${tu} units)</option>`;
   }
+  html += '</select></div>';
+  html += '<div id="slotContent"></div>';
+  el.innerHTML = html;
+  showSlot();
+}
+
+function showSlot() {
+  if (!deltaData) return;
+  const idx = parseInt(document.getElementById('slotSelect').value);
+  const slot = deltaData.slots[idx];
+  const el = document.getElementById('slotContent');
+
+  const t1 = slot.table1, t2 = slot.table2;
+  const totalUnits = t1.totals.u + (t2.totals.u || 0);
+  const totalSpend = Math.round(t1.totals.s + (t2.totals.s || 0));
+  const totalOrders = t1.totals.o + (t2.totals.o || 0);
+
+  let html = `<div class="slot-header"><span>${slot.slot}</span><span class="slot-stats">${totalOrders} orders &middot; ${totalUnits} units &middot; ₹${F(totalSpend)} spend</span></div>`;
+  html += matrixTable(slot.table1, 'Arjuna Tea (Core) — ' + slot.slot);
+  html += matrixTable(slot.table2, 'Black Leaf Tea — ' + slot.slot);
+  html += deltaStateTable(slot.table3, slot.slot);
+  html += deltaAccTable(slot.table4, slot.slot);
+  html += deltaGrowthTable(slot.table5, slot.slot);
   el.innerHTML = html;
 }
 
