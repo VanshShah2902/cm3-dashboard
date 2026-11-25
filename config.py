@@ -9,6 +9,29 @@ SHOPIFY_STORE = os.getenv('SHOPIFY_STORE_DOMAIN', 'jaadudiet.myshopify.com')
 SHOPIFY_TOKEN = os.getenv('SHOPIFY_ACCESS_TOKEN', '')
 API_SECRET = os.getenv('API_SECRET', '')
 
+SHOPIFY_STORES = [
+    {
+        'name': 'Jaadu Diet', 'short': 'JD',
+        'domain': os.getenv('SHOPIFY_STORE_DOMAIN', 'jaadudiet.myshopify.com'),
+        'token': os.getenv('SHOPIFY_ACCESS_TOKEN', ''),
+        'client_id': '', 'client_secret': '',
+    },
+    {
+        'name': 'DSM', 'short': 'DSM',
+        'domain': os.getenv('SHOPIFY_DSM_DOMAIN', 'dailysaladmix.myshopify.com'),
+        'token': '',
+        'client_id': os.getenv('SHOPIFY_DSM_CLIENT_ID', ''),
+        'client_secret': os.getenv('SHOPIFY_DSM_CLIENT_SECRET', ''),
+    },
+    {
+        'name': 'ZOC', 'short': 'ZOC',
+        'domain': os.getenv('SHOPIFY_ZOC_DOMAIN', 'zerooilcooking.myshopify.com'),
+        'token': '',
+        'client_id': os.getenv('SHOPIFY_ZOC_CLIENT_ID', ''),
+        'client_secret': os.getenv('SHOPIFY_ZOC_CLIENT_SECRET', ''),
+    },
+]
+
 ACCOUNTS = [
     {'name': 'Jaadu Diet',      'id': os.getenv('ACCOUNT_1_ID', ''), 'token': os.getenv('ACCOUNT_1_TOKEN', ''), 'cm3': 'Acc 1',         'short': 'MA1', 'suffix': '015'},
     {'name': 'DBC 2',           'id': os.getenv('ACCOUNT_2_ID', ''), 'token': os.getenv('ACCOUNT_2_TOKEN', ''), 'cm3': 'Acc 2',         'short': 'MA2', 'suffix': '680'},
@@ -16,6 +39,9 @@ ACCOUNTS = [
     {'name': "Dr Bimal's",      'id': os.getenv('ACCOUNT_4_ID', ''), 'token': os.getenv('ACCOUNT_4_TOKEN', ''), 'cm3': 'Acc 4',         'short': 'MA4', 'suffix': '768'},
     {'name': 'FA1',             'id': os.getenv('ACCOUNT_5_ID', ''), 'token': os.getenv('ACCOUNT_5_TOKEN', ''), 'cm3': 'Flank MA 4',    'short': 'FA1', 'suffix': '389'},
     {'name': 'FA2',             'id': os.getenv('ACCOUNT_6_ID', ''), 'token': os.getenv('ACCOUNT_6_TOKEN', ''), 'cm3': 'Flank RS NPD',  'short': 'FA2', 'suffix': '204'},
+    {'name': 'FA3',             'id': os.getenv('ACCOUNT_7_ID', ''), 'token': os.getenv('ACCOUNT_7_TOKEN', ''), 'cm3': 'FA3',           'short': 'FA3', 'suffix': '708'},
+    {'name': 'FA4',             'id': os.getenv('ACCOUNT_8_ID', ''), 'token': os.getenv('ACCOUNT_8_TOKEN', ''), 'cm3': 'FA4',           'short': 'FA4', 'suffix': '550'},
+    {'name': 'FA5',             'id': os.getenv('ACCOUNT_9_ID', ''), 'token': os.getenv('ACCOUNT_9_TOKEN', ''), 'cm3': 'FA5',           'short': 'FA5', 'suffix': '177'},
 ]
 
 SUFFIX_TO_CM3 = {a['suffix']: a['cm3'] for a in ACCOUNTS}

@@ -205,7 +205,7 @@ def process_orders(orders_data, campaign_list, date_str):
 
     def pool_for(kind, state):
         c = camp_df[(camp_df.kind == kind) & (camp_df.state == state) & (camp_df.spend > 0)]
-        ok = {'Acc 1', 'Acc 2', 'Acc 3', 'Acc 4'}
+        ok = {'Acc 1', 'Acc 2', 'Acc 3', 'Acc 4', 'FA3', 'FA4', 'FA5'}
         c = c[c.acc.isin(ok)]
         c = c[c.state != 'APTS']
         out = c.groupby('acc').spend.sum()
@@ -310,8 +310,8 @@ def build_delta_tables(today_df, hourly_spend_rows, campaign_list, today_str):
     camp_df = pd.DataFrame(campaign_list, columns=['cid', 'acc', 'state', 'kind', 'spend', 'deliv', 'name'])
 
     SEQ_STATES = ['MH', 'NCR', 'UP', 'WB', 'KA', 'TN', 'KL', 'BR', 'JH', 'APTS', 'RJ']
-    ACC_ORDER = ['Acc 1', 'Acc 2', 'Acc 3', 'Acc 4', 'Flank MA 4', 'Flank RS NPD']
-    ACCS_SHORT = {'MA1': 'Acc 1', 'MA2': 'Acc 2', 'MA3': 'Acc 3', 'MA4': 'Acc 4', 'FA1': 'Flank MA 4', 'FA2': 'Flank RS NPD'}
+    ACC_ORDER = ['Acc 1', 'Acc 2', 'Acc 3', 'Acc 4', 'Flank MA 4', 'Flank RS NPD', 'FA3', 'FA4', 'FA5']
+    ACCS_SHORT = {'MA1': 'Acc 1', 'MA2': 'Acc 2', 'MA3': 'Acc 3', 'MA4': 'Acc 4', 'FA1': 'Flank MA 4', 'FA2': 'Flank RS NPD', 'FA3': 'FA3', 'FA4': 'FA4', 'FA5': 'FA5'}
 
     hourly_spend = defaultdict(lambda: defaultdict(float))
     for r in hourly_spend_rows:
@@ -400,7 +400,7 @@ def build_delta_tables(today_df, hourly_spend_rows, campaign_list, today_str):
             d = acc_data[r['account']]
             d[0] += r['orders']; d[1] += r['units']; d[2] += r['gross']; d[3] += r['raw_spend']
         acc_rows = []
-        for an in ['MA1', 'MA2', 'MA3', 'MA4', 'FA1', 'FA2']:
+        for an in ['MA1', 'MA2', 'MA3', 'MA4', 'FA1', 'FA2', 'FA3', 'FA4', 'FA5']:
             if an in acc_data:
                 d = acc_data[an]
                 cpt = round(d[3] * 1.18 / d[1]) if d[1] > 0 else 0
@@ -459,7 +459,7 @@ def build_tables(today_df, yest_df, spend_rows, campaign_list, today_str, yest_s
     camp_spend = camp_df.groupby(['acc', 'state', 'kind']).spend.sum()
 
     SEQ_STATES = ['MH', 'NCR', 'UP', 'WB', 'KA', 'TN', 'KL', 'BR', 'JH', 'APTS', 'RJ']
-    ACC_ORDER = ['Acc 1', 'Acc 2', 'Acc 3', 'Acc 4', 'Flank MA 4', 'Flank RS NPD']
+    ACC_ORDER = ['Acc 1', 'Acc 2', 'Acc 3', 'Acc 4', 'Flank MA 4', 'Flank RS NPD', 'FA3', 'FA4', 'FA5']
 
     def build_matrix(kind):
         rows = []
@@ -546,7 +546,7 @@ def build_tables(today_df, yest_df, spend_rows, campaign_list, today_str, yest_s
         d[3] += r['raw_spend']
 
     acc_rows = []
-    for an in ['MA1', 'MA2', 'MA3', 'MA4', 'FA1', 'FA2']:
+    for an in ['MA1', 'MA2', 'MA3', 'MA4', 'FA1', 'FA2', 'FA3', 'FA4', 'FA5']:
         if an in acc_data:
             d = acc_data[an]
             cpt = round(d[3] * 1.18 / d[1]) if d[1] > 0 else 0
@@ -563,7 +563,7 @@ def build_tables(today_df, yest_df, spend_rows, campaign_list, today_str, yest_s
     acc_tot['cpt'] = round(acc_tot['raw_spend'] * 1.18 / acc_tot['units']) if acc_tot['units'] > 0 else 0
 
     # Table 5: Account-wise Growth
-    ACCS_MAP = {'MA1': 'Acc 1', 'MA2': 'Acc 2', 'MA3': 'Acc 3', 'MA4': 'Acc 4', 'FA1': 'Flank MA 4', 'FA2': 'Flank RS NPD'}
+    ACCS_MAP = {'MA1': 'Acc 1', 'MA2': 'Acc 2', 'MA3': 'Acc 3', 'MA4': 'Acc 4', 'FA1': 'Flank MA 4', 'FA2': 'Flank RS NPD', 'FA3': 'FA3', 'FA4': 'FA4', 'FA5': 'FA5'}
 
     def acc_units(d, acc_code):
         if len(d) == 0:

@@ -2,7 +2,50 @@
 import time
 import requests
 from datetime import datetime, timedelta
-from config import ACCOUNTS, META_API_BASE, SHOPIFY_STORE, SHOPIFY_TOKEN
+from config import ACCOUNTS, META_API_BASE, SHOPIFY_STORE, SHOPIFY_TOKEN, SHOPIFY_STORES
+
+_token_cache = {}
+
+def _get_shopify_token(store):
+    """Get access token for a Shopify store. Uses static token or client credentials grant."""
+    if store.get('token'):
+        return store['token']
+
+    cid = store.get('client_id', '')
+    secret = store.get('client_secret', '')
+    if not cid or not secret:
+        return None
+
+    domain = store['domain']
+    cached = _token_cache.get(domain)
+    if cached and cached['expires_at'] > time.time():
+        return cached['token']
+
+    try:
+        resp = requests.post(
+            f"https://{domain}/admin/oauth/access_token",
+            data={
+                'grant_type': 'client_credentials',
+                'client_id': cid,
+                'client_secret': secret,
+            },
+            headers={'Content-Type': 'application/x-www-form-urlencoded'},
+            timeout=30,
+        )
+        data = resp.json()
+        token = data.get('access_token')
+        expires_in = data.get('expires_in', 86399)
+        if token:
+            _token_cache[domain] = {
+                'token': token,
+                'expires_at': time.time() + expires_in - 300,
+            }
+            print(f"  Shopify {store['name']}: token refreshed (expires in {expires_in}s)")
+            return token
+        print(f"  Shopify {store['name']}: token exchange failed: {data}")
+    except Exception as e:
+        print(f"  Shopify {store['name']}: token exchange error: {e}")
+    return None
 
 
 def fetch_meta_spend(date_str):
@@ -115,24 +158,23 @@ def fetch_meta_spend_hourly(date_str):
     return rows
 
 
-def fetch_shopify_orders(date_str, end_date_str=None):
-    """Fetch Shopify orders for a date (or date range).
-    Returns list of flattened order-lineitem dicts.
-    """
-    if not SHOPIFY_TOKEN or not SHOPIFY_STORE:
-        print("  Shopify credentials missing")
-        return []
+def _fetch_single_store_orders(store, date_str, end_date_str):
+    """Fetch orders from a single Shopify store."""
+    store_domain = store['domain']
+    store_name = store['name']
+    store_token = _get_shopify_token(store)
 
-    if end_date_str is None:
-        end_date_str = date_str
+    if not store_token or not store_domain:
+        print(f"  Shopify {store_name}: credentials missing, skipping")
+        return []
 
     created_min = f"{date_str}T00:00:00+05:30"
     created_max = f"{end_date_str}T23:59:59+05:30"
 
-    base_url = f"https://{SHOPIFY_STORE}/admin/api/2024-01/orders.json"
-    headers = {'X-Shopify-Access-Token': SHOPIFY_TOKEN}
+    base_url = f"https://{store_domain}/admin/api/2024-01/orders.json"
+    headers = {'X-Shopify-Access-Token': store_token}
 
-    all_orders = []
+    store_orders = []
     params = {
         'created_at_min': created_min,
         'created_at_max': created_max,
@@ -147,7 +189,7 @@ def fetch_shopify_orders(date_str, end_date_str=None):
             resp = requests.get(url, headers=headers, params=params if page == 0 else None, timeout=60)
             data = resp.json()
         except Exception as e:
-            print(f"  Shopify fetch error: {e}")
+            print(f"  Shopify {store_name} fetch error: {e}")
             break
 
         orders = data.get('orders', [])
@@ -163,6 +205,7 @@ def fetch_shopify_orders(date_str, end_date_str=None):
                 'Shipping Name': '',
                 'Shipping Zip': '',
                 'Note Attributes': '',
+                'Store': store_name,
             }
 
             shipping = order.get('shipping_address') or {}
@@ -177,10 +220,10 @@ def fetch_shopify_orders(date_str, end_date_str=None):
 
             line_items = order.get('line_items', [])
             if not line_items:
-                all_orders.append({**base, 'Lineitem name': '', 'Lineitem quantity': 0, 'Lineitem price': 0.0})
+                store_orders.append({**base, 'Lineitem name': '', 'Lineitem quantity': 0, 'Lineitem price': 0.0})
             else:
                 for li in line_items:
-                    all_orders.append({
+                    store_orders.append({
                         **base,
                         'Lineitem name': li.get('name', ''),
                         'Lineitem quantity': int(li.get('quantity', 1)),
@@ -198,5 +241,21 @@ def fetch_shopify_orders(date_str, end_date_str=None):
         page += 1
         time.sleep(0.5)
 
-    print(f"  Shopify: {len(all_orders)} line items fetched ({date_str} to {end_date_str})")
+    print(f"  Shopify {store_name}: {len(store_orders)} line items fetched ({date_str} to {end_date_str})")
+    return store_orders
+
+
+def fetch_shopify_orders(date_str, end_date_str=None):
+    """Fetch Shopify orders from all configured stores for a date (or date range).
+    Returns list of flattened order-lineitem dicts with 'Store' field.
+    """
+    if end_date_str is None:
+        end_date_str = date_str
+
+    all_orders = []
+    for store in SHOPIFY_STORES:
+        orders = _fetch_single_store_orders(store, date_str, end_date_str)
+        all_orders.extend(orders)
+
+    print(f"  Shopify total: {len(all_orders)} line items from {len(SHOPIFY_STORES)} stores")
     return all_orders
