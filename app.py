@@ -474,7 +474,7 @@ function renderCvr(d) {
   let html = '<div class="section"><div class="section-title">Conversion Rates</div>';
   html += '<div class="tbl-wrap"><table><thead>';
   html += `<tr><th rowspan="2">Account</th><th colspan="4" style="text-align:center;border-bottom:1px solid var(--border)">${yL}</th><th colspan="4" style="text-align:center;border-bottom:1px solid var(--border)">${tL}</th></tr>`;
-  html += '<tr><th class="num">Clicks</th><th class="num">Real CVR</th><th class="num">Orders</th><th class="num">Final CVR</th><th class="num">Clicks</th><th class="num">Real CVR</th><th class="num">Orders</th><th class="num">Final CVR</th></tr>';
+  html += '<tr><th class="num">Clicks</th><th class="num">Panel CVR</th><th class="num">Orders</th><th class="num">Real CVR</th><th class="num">Clicks</th><th class="num">Panel CVR</th><th class="num">Orders</th><th class="num">Real CVR</th></tr>';
   html += '</thead><tbody>';
   for (const r of d.rows) {
     const yrCls = r.y_real >= 2 ? 'up' : r.y_real < 1 ? 'down' : '';
