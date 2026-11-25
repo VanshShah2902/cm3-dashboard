@@ -13,7 +13,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from config import API_SECRET
-from data_fetch import fetch_meta_spend, fetch_meta_spend_hourly, fetch_shopify_orders
+from data_fetch import fetch_meta_spend, fetch_meta_spend_hourly, fetch_shopify_orders, fetch_meta_cvr
 from cm3_engine import build_campaign_dict, process_orders, build_tables, build_delta_tables
 
 app = Flask(__name__)
@@ -121,6 +121,120 @@ def get_delta(date_str=None, fresh=False):
                 return cached['data']
 
     data = _run_delta(date_str)
+    with _cache_lock:
+        _cache[cache_key] = {'data': data, 'ts': time.time()}
+    return data
+
+
+def _run_cvr(date_str=None):
+    now = _ist_now()
+    if date_str is None:
+        date_str = now.strftime('%Y-%m-%d')
+    yest_str = (datetime.strptime(date_str, '%Y-%m-%d') - timedelta(days=1)).strftime('%Y-%m-%d')
+
+    print(f"[CVR] Fetching Meta CVR for {date_str} and {yest_str}...")
+    today_cvr = fetch_meta_cvr(date_str)
+    yest_cvr = fetch_meta_cvr(yest_str)
+
+    shared = _get_shared_data(date_str)
+    today_df = shared['today_df']
+
+    yest_orders = fetch_shopify_orders(yest_str)
+    yest_campaigns = build_campaign_dict(fetch_meta_spend(yest_str))
+    yest_df = process_orders(yest_orders, yest_campaigns, yest_str)
+
+    from config import NAME_TO_SHORT
+    today_by_acc = {}
+    for r in today_cvr:
+        today_by_acc[r['short']] = r
+    yest_by_acc = {}
+    for r in yest_cvr:
+        yest_by_acc[r['short']] = r
+
+    shopify_today_acc = {}
+    shopify_yest_acc = {}
+    if len(today_df) > 0:
+        from config import CM3_TO_SHORT
+        for acc, grp in today_df.groupby('acc'):
+            short = CM3_TO_SHORT.get(acc, acc)
+            shopify_today_acc[short] = len(grp)
+    if len(yest_df) > 0:
+        from config import CM3_TO_SHORT
+        for acc, grp in yest_df.groupby('acc'):
+            short = CM3_TO_SHORT.get(acc, acc)
+            shopify_yest_acc[short] = len(grp)
+
+    acc_order = ['MA1', 'MA2', 'MA3', 'MA4', 'FA1', 'FA2', 'FA3', 'FA4', 'FA5']
+    rows = []
+    tot_y = {'clicks': 0, 'purch': 0, 'orders': 0}
+    tot_t = {'clicks': 0, 'purch': 0, 'orders': 0}
+
+    for short in acc_order:
+        y = yest_by_acc.get(short, {})
+        t = today_by_acc.get(short, {})
+        y_clicks = y.get('link_clicks', 0)
+        y_purch = y.get('purchases', 0)
+        y_orders = shopify_yest_acc.get(short, 0)
+        t_clicks = t.get('link_clicks', 0)
+        t_purch = t.get('purchases', 0)
+        t_orders = shopify_today_acc.get(short, 0)
+
+        if y_clicks == 0 and t_clicks == 0 and y_purch == 0 and t_purch == 0:
+            continue
+
+        y_real = round(y_purch / y_clicks * 100, 2) if y_clicks > 0 else 0
+        y_final = round(y_orders / y_clicks * 100, 2) if y_clicks > 0 else 0
+        t_real = round(t_purch / t_clicks * 100, 2) if t_clicks > 0 else 0
+        t_final = round(t_orders / t_clicks * 100, 2) if t_clicks > 0 else 0
+
+        rows.append({
+            'account': short,
+            'y_clicks': y_clicks, 'y_purch': y_purch, 'y_orders': y_orders,
+            'y_real': y_real, 'y_final': y_final,
+            't_clicks': t_clicks, 't_purch': t_purch, 't_orders': t_orders,
+            't_real': t_real, 't_final': t_final,
+            'y_spend': round(y.get('spend', 0)), 't_spend': round(t.get('spend', 0)),
+        })
+        tot_y['clicks'] += y_clicks; tot_y['purch'] += y_purch; tot_y['orders'] += y_orders
+        tot_t['clicks'] += t_clicks; tot_t['purch'] += t_purch; tot_t['orders'] += t_orders
+
+    totals = {
+        'y_clicks': tot_y['clicks'], 'y_purch': tot_y['purch'], 'y_orders': tot_y['orders'],
+        'y_real': round(tot_y['purch'] / tot_y['clicks'] * 100, 2) if tot_y['clicks'] > 0 else 0,
+        'y_final': round(tot_y['orders'] / tot_y['clicks'] * 100, 2) if tot_y['clicks'] > 0 else 0,
+        't_clicks': tot_t['clicks'], 't_purch': tot_t['purch'], 't_orders': tot_t['orders'],
+        't_real': round(tot_t['purch'] / tot_t['clicks'] * 100, 2) if tot_t['clicks'] > 0 else 0,
+        't_final': round(tot_t['orders'] / tot_t['clicks'] * 100, 2) if tot_t['clicks'] > 0 else 0,
+    }
+
+    today_dt = datetime.strptime(date_str, '%Y-%m-%d')
+    yest_dt = datetime.strptime(yest_str, '%Y-%m-%d')
+
+    return {
+        'rows': rows, 'totals': totals,
+        'today_label': f"{today_dt.day} {today_dt.strftime('%b')}",
+        'yest_label': f"{yest_dt.day} {yest_dt.strftime('%b')}",
+        'date': date_str,
+    }
+
+
+def get_cvr(date_str=None, fresh=False):
+    now = _ist_now()
+    if date_str is None:
+        date_str = now.strftime('%Y-%m-%d')
+
+    if fresh:
+        with _shared_lock:
+            _shared.pop(date_str, None)
+
+    cache_key = f"cvr_{date_str}"
+    if not fresh:
+        with _cache_lock:
+            cached = _cache.get(cache_key)
+            if cached and (time.time() - cached['ts']) < 90:
+                return cached['data']
+
+    data = _run_cvr(date_str)
     with _cache_lock:
         _cache[cache_key] = {'data': data, 'ts': time.time()}
     return data
@@ -258,6 +372,7 @@ tfoot td.num { text-align: right; }
   <div class="tabs">
     <button class="tab active" id="tabCm3" onclick="switchTab('cm3')">CM3 Report</button>
     <button class="tab" id="tabDelta" onclick="switchTab('delta')">Delta (Hourly)</button>
+    <button class="tab" id="tabCvr" onclick="switchTab('cvr')">CVR</button>
   </div>
   <div id="content">
     <div class="loading">
@@ -265,7 +380,7 @@ tfoot td.num { text-align: right; }
       <div class="loading-text">Fetching Meta spend & Shopify orders...</div>
     </div>
   </div>
-  <div class="footer">CM3 Intraday Dashboard &bull; Data: Meta Marketing API + Shopify</div>
+  <div class="footer">CM3 Intraday Dashboard &bull; Data: Meta Marketing API + Shopify &bull; MA1-MA4, FA1-FA5</div>
 </div>
 
 <script>
@@ -280,6 +395,7 @@ function switchTab(tab) {
   currentTab = tab;
   document.getElementById('tabCm3').classList.toggle('active', tab === 'cm3');
   document.getElementById('tabDelta').classList.toggle('active', tab === 'delta');
+  document.getElementById('tabCvr').classList.toggle('active', tab === 'cvr');
   loadCurrent();
 }
 
@@ -287,7 +403,8 @@ let isFresh = false;
 
 async function loadCurrent() {
   if (currentTab === 'cm3') await loadCm3();
-  else await loadDelta();
+  else if (currentTab === 'delta') await loadDelta();
+  else if (currentTab === 'cvr') await loadCvr();
   isFresh = false;
 }
 
@@ -326,6 +443,59 @@ async function loadDelta() {
   } catch(e) {
     el.innerHTML = `<div class="loading"><div class="loading-text" style="color:var(--red)">Error: ${e.message}</div></div>`;
   }
+}
+
+async function loadCvr() {
+  const el = document.getElementById('content');
+  el.innerHTML = '<div class="loading"><div class="spinner"></div><div class="loading-text">Fetching CVR data...</div></div>';
+  try {
+    const d = datePick();
+    let url = d ? `/api/cvr?date=${d}` : '/api/cvr';
+    if (isFresh) url += (url.includes('?') ? '&' : '?') + 'fresh=1';
+    const r = await fetch(url);
+    const j = await r.json();
+    if (j.error) throw new Error(j.error);
+    renderCvr(j);
+  } catch(e) {
+    el.innerHTML = `<div class="loading"><div class="loading-text" style="color:var(--red)">Error: ${e.message}</div></div>`;
+  }
+}
+
+function renderCvr(d) {
+  const el = document.getElementById('content');
+  if (!d.rows || d.rows.length === 0) {
+    el.innerHTML = '<div class="loading"><div class="loading-text">No CVR data available yet.</div></div>';
+    return;
+  }
+  const P = v => v != null ? v.toFixed(2) + '%' : '—';
+  const yL = d.yest_label || 'Yesterday';
+  const tL = d.today_label || 'Today';
+
+  let html = '<div class="section"><div class="section-title">Conversion Rates</div>';
+  html += '<div class="tbl-wrap"><table><thead>';
+  html += `<tr><th rowspan="2">Account</th><th colspan="4" style="text-align:center;border-bottom:1px solid var(--border)">${yL}</th><th colspan="4" style="text-align:center;border-bottom:1px solid var(--border)">${tL}</th></tr>`;
+  html += '<tr><th class="num">Clicks</th><th class="num">Real CVR</th><th class="num">Orders</th><th class="num">Final CVR</th><th class="num">Clicks</th><th class="num">Real CVR</th><th class="num">Orders</th><th class="num">Final CVR</th></tr>';
+  html += '</thead><tbody>';
+  for (const r of d.rows) {
+    const yrCls = r.y_real >= 2 ? 'up' : r.y_real < 1 ? 'down' : '';
+    const yfCls = r.y_final >= 2 ? 'up' : r.y_final < 1 ? 'down' : '';
+    const trCls = r.t_real >= 2 ? 'up' : r.t_real < 1 ? 'down' : '';
+    const tfCls = r.t_final >= 2 ? 'up' : r.t_final < 1 ? 'down' : '';
+    html += `<tr><td><b>${r.account}</b></td>`;
+    html += `<td class="num">${F(r.y_clicks)}</td><td class="num ${yrCls}"><b>${P(r.y_real)}</b></td><td class="num">${F(r.y_orders)}</td><td class="num ${yfCls}"><b>${P(r.y_final)}</b></td>`;
+    html += `<td class="num">${F(r.t_clicks)}</td><td class="num ${trCls}"><b>${P(r.t_real)}</b></td><td class="num">${F(r.t_orders)}</td><td class="num ${tfCls}"><b>${P(r.t_final)}</b></td>`;
+    html += '</tr>';
+  }
+  html += '</tbody>';
+  if (d.totals) {
+    const t = d.totals;
+    html += '<tfoot><tr><td><b>Total</b></td>';
+    html += `<td class="num">${F(t.y_clicks)}</td><td class="num"><b>${P(t.y_real)}</b></td><td class="num">${F(t.y_orders)}</td><td class="num"><b>${P(t.y_final)}</b></td>`;
+    html += `<td class="num">${F(t.t_clicks)}</td><td class="num"><b>${P(t.t_real)}</b></td><td class="num">${F(t.t_orders)}</td><td class="num"><b>${P(t.t_final)}</b></td>`;
+    html += '</tr></tfoot>';
+  }
+  html += '</table></div></div>';
+  el.innerHTML = html;
 }
 
 function downloadExcel() {
@@ -598,6 +768,24 @@ def api_delta():
     fresh = request.args.get('fresh') == '1'
     try:
         data = get_delta(date_str, fresh=fresh)
+        return jsonify(data)
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/cvr')
+def api_cvr():
+    date_str = request.args.get('date')
+    if date_str:
+        try:
+            datetime.strptime(date_str, '%Y-%m-%d')
+        except ValueError:
+            return jsonify({'error': 'Invalid date format, use YYYY-MM-DD'}), 400
+    fresh = request.args.get('fresh') == '1'
+    try:
+        data = get_cvr(date_str, fresh=fresh)
         return jsonify(data)
     except Exception as e:
         import traceback

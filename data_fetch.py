@@ -48,6 +48,56 @@ def _get_shopify_token(store):
     return None
 
 
+def fetch_meta_cvr(date_str):
+    """Fetch account-level CVR metrics (impressions, link clicks, purchases) for a date.
+    Returns list of dicts: {account, impressions, link_clicks, purchases, spend}
+    """
+    rows = []
+    for acc in ACCOUNTS:
+        aid, token = acc['id'], acc['token']
+        if not aid or not token:
+            continue
+
+        url = (
+            f"{META_API_BASE}/act_{aid}/insights"
+            f"?access_token={token}"
+            f"&level=account"
+            f"&fields=impressions,inline_link_clicks,actions,spend"
+            f"&time_range={{\"since\":\"{date_str}\",\"until\":\"{date_str}\"}}"
+        )
+
+        try:
+            resp = requests.get(url, timeout=60)
+            data = resp.json()
+        except Exception as e:
+            print(f"  Meta CVR {acc['name']}: {e}")
+            continue
+
+        if 'error' in data:
+            print(f"  Meta CVR {acc['name']} error: {data['error'].get('message', '')}")
+            continue
+
+        for r in data.get('data', []):
+            purchases = 0
+            for a in r.get('actions', []):
+                if a.get('action_type') == 'offsite_conversion.fb_pixel_purchase':
+                    purchases = int(a.get('value', 0))
+                    break
+
+            rows.append({
+                'account': acc['name'],
+                'short': acc['short'],
+                'impressions': int(r.get('impressions', 0)),
+                'link_clicks': int(r.get('inline_link_clicks', 0)),
+                'purchases': purchases,
+                'spend': float(r.get('spend', 0)),
+            })
+
+        print(f"  Meta CVR: {acc['name']} done")
+
+    return rows
+
+
 def fetch_meta_spend(date_str):
     """Fetch adset-level spend for a given date from all accounts.
     Returns list of dicts: {account, campaign_name, campaign_id, adset_name, adset_id, spend}
